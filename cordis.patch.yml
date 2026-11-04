@@ -1,0 +1,4 @@
+- insert:
+    - id: prompt-tuner
+      name: '@kongchenhui/dsh-prompt-tuner'
+      config: {}
