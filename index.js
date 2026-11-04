@@ -355,43 +355,8 @@ function createHandler(ctx, store) {
   }
 }
 
-/* ------------------------------------------------------------------ tool -- */
-
 /**
- * Register the agent-facing counterpart of the composer button, so the same
- * settings-driven rewrite is reachable from a prompt.
- */
-function registerTool(child, store, ctx) {
-  return child.tools.register({
-    name: 'tune_prompt',
-    description:
-      'Rewrite a draft prompt for an AI assistant using the prompt-tuner plugin settings: fix typos, punctuation, grammar, terminology and contradictions, then tighten it into a concrete, executable prompt. Returns the rewritten text.',
-    parameters: {
-      type: 'object',
-      properties: { text: { type: 'string', description: '要改写的原始草稿或提示词。' } },
-      required: ['text'],
-      additionalProperties: false,
-    },
-    output: {
-      schema: {
-        type: 'object',
-        properties: { text: { type: 'string' } },
-        required: ['text'],
-        additionalProperties: false,
-      },
-      render(_args, value) {
-        return [{ type: 'text', text: String(value?.text ?? '') }]
-      },
-    },
-    async execute(args) {
-      const result = await rewrite(ctx, store, args ?? {})
-      return { text: result.text }
-    },
-  })
-}
-
-/**
- * Mount the settings route and the tool.
+ * Mount the settings route.
  * @param ctx - host plugin context.
  */
 export function apply(ctx) {
@@ -402,9 +367,5 @@ export function apply(ctx) {
       () => child.webServer.register({ kind: 'prefix', path: ROUTE_PATH, handler: createHandler(ctx, store) }),
       'prompt-tuner: http route',
     )
-  })
-
-  ctx.inject(['tools', 'llm'], (child) => {
-    child.effect(() => registerTool(child, store, ctx), 'prompt-tuner: tool')
   })
 }

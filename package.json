@@ -5,6 +5,24 @@
   "type": "module",
   "main": "index.js",
   "license": "MIT",
+  "author": "kongchenhui",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kongchenhui/dsh-prompt-tuner.git"
+  },
+  "homepage": "https://github.com/kongchenhui/dsh-prompt-tuner#readme",
+  "bugs": {
+    "url": "https://github.com/kongchenhui/dsh-prompt-tuner/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "prompt",
+    "prompt-engineering",
+    "cordis",
+    "react"
+  ],
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
