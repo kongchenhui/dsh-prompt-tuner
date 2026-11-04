@@ -20,9 +20,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          # setup-node writes this into the local .npmrc from NODE_AUTH_TOKEN.
-          env:
-            NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # setup-node writes this into the local .npmrc from NODE_AUTH_TOKEN.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Check tag matches package version
         run: |
