@@ -9,7 +9,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createSettingsStore, DEFAULTS, MAX_OUTPUT_TOKENS, normalize } from '../src/host/settings.ts'
+import { createSettingsStore, DEFAULTS, normalize } from '../src/host/settings.ts'
 
 describe('normalize', () => {
   it('projects a non-object onto defaults', () => {
@@ -28,13 +28,17 @@ describe('normalize', () => {
     expect(normalize({ model: { provider: '  p  ', model: ' m ' } }).model).toEqual({ provider: 'p', model: 'm' })
   })
 
-  it('clamps maxOutputTokens to the ceiling', () => {
-    expect(normalize({ maxOutputTokens: 99999 }).maxOutputTokens).toBe(MAX_OUTPUT_TOKENS)
+  it('keeps an oversized maxOutputTokens instead of clamping it', () => {
+    // The cap is the provider's call, not the projection's: whatever the user
+    // typed is what reaches prepareCall, so a model that accepts more is not
+    // silently held at someone else's ceiling.
+    expect(normalize({ maxOutputTokens: 99999 }).maxOutputTokens).toBe(99999)
+    expect(normalize({ maxOutputTokens: 8192 }).maxOutputTokens).toBe(8192)
     expect(normalize({ maxOutputTokens: 7 }).maxOutputTokens).toBe(7)
   })
 
   it('rejects a non-integer or non-positive token budget', () => {
-    for (const value of [0, -1, 1.5, 'many', null]) {
+    for (const value of [0, -1, 1.5, 'many', null, Number.MAX_VALUE * 2]) {
       expect(normalize({ maxOutputTokens: value }).maxOutputTokens).toBe(DEFAULTS.maxOutputTokens)
     }
   })

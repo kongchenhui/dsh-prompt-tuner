@@ -346,7 +346,11 @@ describe('a failure', () => {
 
     mount(store, 'a', 'my draft')
     expect(button().dataset.state).toBe('failed')
+    // The bubble follows the pointer only: focusing the button (a click leaves
+    // it focused) must not park a tooltip on screen.
     fireEvent.focus(button())
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    fireEvent.mouseEnter(button())
     expect(screen.getByRole('tooltip').textContent).toContain('HTTP 500')
   })
 

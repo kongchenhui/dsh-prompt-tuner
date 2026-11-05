@@ -163,12 +163,11 @@ export function SettingsPage({ t, store, snapshot }: SettingsPageProps): ReactEl
             }}
           />
         </Row>
-        <Row className={css.cell} label={t('tokensLabel')} hint={t('tokensHint')}>
+        <Row className={css.cell} label={t('tokensLabel')}>
           <input
             className={css.input}
             type="number"
             min={1}
-            max={2048}
             step={1}
             value={value.maxOutputTokens}
             onChange={(event) => {

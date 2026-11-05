@@ -172,12 +172,6 @@ function TunerControl({
         onMouseLeave={() => {
           setHover(false)
         }}
-        onFocus={() => {
-          setHover(true)
-        }}
-        onBlur={() => {
-          setHover(false)
-        }}
       >
         {busy ? <IconSpinner className={css.spin} /> : local === 'done' ? <IconUndo /> : <IconSparkle />}
       </button>

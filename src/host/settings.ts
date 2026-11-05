@@ -11,9 +11,6 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-/** Hard ceiling on the max-output-tokens setting. */
-export const MAX_OUTPUT_TOKENS = 2048
-
 /** The one rewriting prompt, used for every run. */
 export const DEFAULT_PROMPT = [
   '你是一名提示词工程师兼校对员。请把用户草稿改写成可直接交给 AI 的提示词，并修正其中的错别字、标点、语法、术语与前后矛盾。',
@@ -57,6 +54,11 @@ export function settingsPath(): string {
 
 /**
  * Project whatever is stored onto the current shape: one prompt, one model pair.
+ *
+ * The token budget is not capped: what one model accepts and another rejects
+ * cannot be decided here, so the value the user typed is the value sent, and an
+ * over-large request fails at the provider with its own message. The projection
+ * only rejects values that are not a usable count at all.
  * @param raw - parsed JSON, possibly from an older or hand-edited document.
  * @returns a complete settings value.
  */
@@ -69,8 +71,7 @@ export function normalize(raw: unknown): Settings {
   return {
     prompt: typeof value.prompt === 'string' && value.prompt.trim() !== '' ? value.prompt : DEFAULTS.prompt,
     model: provider !== '' && model !== '' ? { provider, model } : { provider: '', model: '' },
-    maxOutputTokens:
-      Number.isInteger(tokens) && tokens > 0 ? Math.min(tokens, MAX_OUTPUT_TOKENS) : DEFAULTS.maxOutputTokens,
+    maxOutputTokens: Number.isSafeInteger(tokens) && tokens > 0 ? tokens : DEFAULTS.maxOutputTokens,
   }
 }
 
