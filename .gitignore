@@ -7,3 +7,6 @@ lib/
 .env
 .env.*
 !.env.example
+
+# Committed on purpose: reproducible installs for the build toolchain.
+!package-lock.json

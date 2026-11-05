@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Prompt Tuner",
-    "description": "Rewrite or correct the composer draft in one click, with one configurable prompt and model."
+    "description": "Rewrite or correct the composer draft in one click, with an editable prompt and model."
   }
 }

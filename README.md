@@ -13,11 +13,11 @@
 
 打开「设置 → 提示词优化」：
 
-| 字段 | 说明 |
-| --- | --- |
-| 优化提示词 | 决定草稿如何被改写，每次优化都使用它。 |
-| 模型 | 默认「跟随当前会话」，即使用输入框当前选择的模型；也可固定为指定模型。 |
-| 最大输出 tokens | 单次改写的输出上限，最高 2048。 |
+| 字段            | 说明                                                                   |
+| --------------- | ---------------------------------------------------------------------- |
+| 优化提示词      | 决定草稿如何被改写，每次优化都使用它。                                 |
+| 模型            | 默认「跟随当前会话」，即使用输入框当前选择的模型；也可固定为指定模型。 |
+| 最大输出 tokens | 单次改写的输出上限，最高 2048。                                        |
 
 模型选择器支持搜索、按服务商分组，方向键上下移动、回车确认。
 
@@ -41,6 +41,8 @@
 
 `"provider": ""` 表示跟随当前会话。
 
+打开动作走系统自己的默认应用解析（Windows 上交给 `explorer.exe`，macOS 上强制文本编辑器），因此与双击打开的行为一致；文件尚不存在时会先按默认值生成。
+
 ## 自定义提示词时的注意事项
 
 优化结果会直接替换草稿，因此提示词应当要求模型**只输出改写后的正文**，不要附加解释、开场白或代码块标记。否则这些多余内容会一并进入输入框。
@@ -54,6 +56,35 @@ dsh plugin --profile <profile> add @kongchenhui/dsh-prompt-tuner
 （`<profile>` 换成你的 profile 名。）
 
 需要 DeepSeek Harness 0.2.1-rc.5 或更高版本。
+
+## 开发
+
+源码用 TypeScript 编写，构建产物不提交：
+
+```text
+src/host/     宿主端：设置文件、模型调用、原生打开器、HTTP 路由
+src/client/   浏览器端：输入框控件、设置页、模型选择器（按组件拆分）
+tests/        vitest 测试
+```
+
+```bash
+npm install        # 安装依赖，并因 prepare 脚本触发一次构建
+npm run build      # 构建 lib/index.js、lib/client.js 与 lib/types
+npm run typecheck  # tsc 类型检查
+npm run lint       # ESLint
+npm run format     # Prettier 写入
+npm test           # vitest
+npm run verify     # 依次执行以上全部
+```
+
+浏览器端由 `tsdown` 打包成 harness 的 closure-factory 产物（`window.__ModuleLoader__.load`），样式写在 `.module.css` 里，构建期编译为哈希类名；模块解析只允许 `react` 等平台模块，引入其它 harness 包会在构建期报错。
+
+`locale/*.json` 由 `src/client/locales.ts` 生成，不要手改：
+
+```bash
+npm run gen:locale      # 重新生成
+npm run verify:locale   # 校验是否过期
+```
 
 ## 许可证
 

@@ -1,0 +1,91 @@
+.anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    color 0.12s;
+}
+
+.icon:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+
+.icon:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 1px;
+}
+
+.icon:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.iconDone {
+  color: var(--dsw-alias-brand-primary);
+}
+
+.iconFailed {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.iconFailed:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+.spin {
+  animation: dpt-rotate 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+@keyframes dpt-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  box-shadow: var(--dsw-elevation-soft);
+}
+
+.tipError {
+  white-space: normal;
+  width: max-content;
+  max-width: 280px;
+  text-align: left;
+  color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-primary);
+}
