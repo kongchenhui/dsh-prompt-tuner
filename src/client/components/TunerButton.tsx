@@ -1,42 +1,44 @@
 /**
  * Composer control: rewrite the draft, then offer the original back.
  *
- * State machine, per mount:
+ * State machine, per Session (held by the store, not by this component):
  * - `idle` → press starts a rewrite
  * - `running` → press cancels (a spinner that cannot be stopped is a trap)
  * - `done` → press restores the original draft
  * - `failed` → press retries; editing the draft clears the failure
  *
- * Rewrites are bound to this control's lifetime: unmounting aborts the
- * in-flight request so a closed composer does not keep spending tokens.
+ * The harness remounts a session-scoped slot on every Session switch, so
+ * nothing here may own state that must survive one: the phase, the drafts, the
+ * failure, and the request itself all live in {@link TunerStore}, keyed by
+ * `sessionId`. This component is a view — it subscribes to its own Session and
+ * forwards presses. Only `hover` is local, because it is genuinely about this
+ * mounted element rather than about the Session.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
-import { request } from '../api.ts'
 import { conciseError } from '../errors.ts'
 import { IconSpinner, IconSparkle, IconUndo } from '../icons/index.tsx'
-import type { ComposerSlotProps, RewriteResponse } from '../types.ts'
+import type { ComposerSlotProps } from '../types.ts'
+import type { TunerSnapshot, TunerStore } from '../tuner-store.ts'
 import { classNames } from '../class-names.ts'
 import css from './TunerButton.module.css'
 
-/** How the control is currently presenting itself. */
-type Phase = 'idle' | 'running' | 'done' | 'failed'
-
-/** The request handle this control holds while a rewrite is live. */
-interface Inflight {
-  abort(): void
+/** Props of {@link TunerButton}. */
+export interface TunerButtonProps extends ComposerSlotProps {
+  readonly store: TunerStore
 }
 
 /**
  * Render the composer control, or nothing when the slot withheld its data.
- * @param props - standard slot props.
+ * @param props - standard slot props plus the plugin's Session store.
  */
-export function TunerButton(props: ComposerSlotProps): ReactElement | null {
-  const { useInput, inputActions } = props
-  // A slot mounted without these cannot show a draft or write one back; the
-  // hooks below must still run unconditionally, so the split happens here.
-  if (useInput === undefined || inputActions === undefined) return null
-  return <TunerControl useInput={useInput} inputActions={inputActions} t={props.t} />
+export function TunerButton(props: TunerButtonProps): ReactElement | null {
+  const { useInput, inputActions, sessionId, store, t } = props
+  // A slot mounted without these cannot show a draft or write one back, and
+  // without a Session there is no partition to read; the hooks below must
+  // still run unconditionally, so the split happens here.
+  if (useInput === undefined || inputActions === undefined || sessionId === undefined) return null
+  return <TunerControl useInput={useInput} inputActions={inputActions} sessionId={sessionId} store={store} t={t} />
 }
 
 /**
@@ -46,114 +48,104 @@ export function TunerButton(props: ComposerSlotProps): ReactElement | null {
 function TunerControl({
   useInput,
   inputActions,
+  sessionId,
+  store,
   t,
-}: ComposerSlotProps & {
+}: TunerButtonProps & {
   readonly useInput: NonNullable<ComposerSlotProps['useInput']>
   readonly inputActions: NonNullable<ComposerSlotProps['inputActions']>
+  readonly sessionId: string
 }): ReactElement {
   const draft = useInput((state) => state.draft)
   const phase = useInput((state) => state.phase)
-  const [local, setLocal] = useState<Phase>('idle')
-  const [original, setOriginal] = useState('')
-  const [enhanced, setEnhanced] = useState('')
-  const [message, setMessage] = useState('')
   const [hover, setHover] = useState(false)
-  const seenEnhanced = useRef(false)
-  const inflight = useRef<Inflight | undefined>(undefined)
+
+  const subscribe = useCallback((listener: () => void) => store.subscribe(sessionId, listener), [sessionId, store])
+  const snapshot = useSyncExternalStore<TunerSnapshot>(
+    subscribe,
+    () => store.getSnapshot(sessionId),
+    () => store.getSnapshot(sessionId),
+  )
+  const local = snapshot.phase
 
   // A hand-edited draft after a rewrite ends the restore offer. The published
   // draft can trail our own setDraft, so cancel only once the rewritten text
   // has actually been observed in the composer.
+  //
+  // The other half: a rewrite that lands while its Session is detached writes
+  // through an input shell the harness already tore down, so the result is
+  // dropped and the composer still shows the pre-rewrite text. The store marks
+  // that case; this re-applies the stored rewrite once on remount. It writes
+  // only while the composer still holds exactly the text the rewrite started
+  // from — anything else there is a real edit, which wins.
   useEffect(() => {
     if (local !== 'done') {
-      seenEnhanced.current = false
+      store.note(sessionId, { enhancedSeen: false })
       return
     }
-    if (draft === enhanced) {
-      seenEnhanced.current = true
+    if (draft === snapshot.enhanced) {
+      store.note(sessionId, { enhancedSeen: true, detachedWrite: false })
       return
     }
-    if (!seenEnhanced.current) return
-    setLocal('idle')
-  }, [draft, enhanced, local])
+    if (draft === snapshot.original) {
+      // The composer still holds the pre-rewrite text. Either our write-back
+      // has not been published yet (wait it out), or it landed on a detached
+      // shell and was dropped — in which case apply the stored rewrite once.
+      if (!store.observe(sessionId).detachedWrite) return
+      store.note(sessionId, { detachedWrite: false })
+      inputActions.setDraft(snapshot.enhanced)
+      return
+    }
+    // The composer holds neither text, so the user edited it: the restore
+    // offer describes a draft that no longer exists, and offering to overwrite
+    // their work would be a trap.
+    store.reset(sessionId)
+  }, [draft, inputActions, local, sessionId, snapshot.enhanced, snapshot.original, store])
 
   // Editing the draft retires a failure: the red icon describes the last
   // attempt, not the text now in the composer.
-  const failedDraft = useRef('')
   useEffect(() => {
     if (local !== 'failed') {
-      failedDraft.current = ''
+      store.note(sessionId, { failureBaseline: undefined })
       return
     }
-    if (failedDraft.current === '') {
-      failedDraft.current = draft
+    const baseline = store.observe(sessionId).failureBaseline
+    if (baseline === undefined) {
+      store.note(sessionId, { failureBaseline: draft })
       return
     }
-    if (draft === failedDraft.current) return
-    failedDraft.current = ''
-    setLocal('idle')
-    setMessage('')
-  }, [draft, local])
-
-  // A cancelled request must not outlive the control.
-  useEffect(
-    () => () => {
-      inflight.current?.abort()
-      inflight.current = undefined
-    },
-    [],
-  )
+    if (draft === baseline) return
+    store.note(sessionId, { failureBaseline: undefined })
+    store.reset(sessionId)
+  }, [draft, local, sessionId, store])
 
   const busy = local === 'running'
   const editing = phase === 'submitting' || phase === 'adjudicating'
   const ready = typeof draft === 'string' && draft.trim() !== ''
 
-  const run = useCallback(async () => {
+  const run = useCallback(() => {
     if (editing) return
     if (local === 'running') {
-      inflight.current?.abort()
-      inflight.current = undefined
-      setLocal('idle')
-      setMessage('')
+      store.cancel(sessionId)
       return
     }
     if (local === 'done') {
-      inputActions.setDraft(original)
-      setLocal('idle')
+      inputActions.setDraft(snapshot.original)
+      store.reset(sessionId)
       return
     }
     const source = draft
     if (typeof source !== 'string' || source.trim() === '') return
-    setMessage('')
-    setLocal('running')
-    const controller = new AbortController()
-    inflight.current = controller
-    try {
-      const body = await request<RewriteResponse>('/rewrite', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: source }),
-        signal: controller.signal,
-      })
-      if (controller.signal.aborted) return
-      if (typeof body.text !== 'string' || body.text.trim() === '') throw new Error('模型没有返回可用内容')
-      inputActions.setDraft(body.text)
-      setOriginal(source)
-      setEnhanced(body.text)
-      setLocal('done')
-    } catch (error) {
-      // Cancelling is not a failure: the user withdrew the request.
-      if (controller.signal.aborted) return
-      setLocal('failed')
-      setMessage(conciseError(error, t))
-      console.error('[prompt-tuner] rewrite failed:', error)
-    } finally {
-      if (inflight.current === controller) inflight.current = undefined
-    }
-  }, [draft, editing, inputActions, local, original, t])
+    // The write-back target is captured per Session: a rewrite that lands after
+    // the user switched away still updates the Session that started it.
+    store.start(sessionId, source, (text) => {
+      inputActions.setDraft(text)
+    })
+  }, [draft, editing, inputActions, local, sessionId, snapshot.original, store])
 
-  const hint = message !== '' ? message : busy ? t('running') : local === 'done' ? t('restore') : t('enhance')
   const failed = local === 'failed'
+  const message = failed && snapshot.failure !== undefined ? conciseError(snapshot.failure, t) : ''
+  const hint = message !== '' ? message : busy ? t('running') : local === 'done' ? t('restore') : t('enhance')
 
   const className = classNames(
     css.icon,
@@ -173,9 +165,7 @@ function TunerControl({
         aria-label={hint}
         aria-busy={busy}
         data-state={local}
-        onClick={() => {
-          void run()
-        }}
+        onClick={run}
         onMouseEnter={() => {
           setHover(true)
         }}

@@ -14,6 +14,8 @@ import { createElement, useEffect, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import { createSettingsStore } from './settings-store.ts'
 import type { SettingsStore } from './settings-store.ts'
+import { createTunerStore } from './tuner-store.ts'
+import type { TunerStore } from './tuner-store.ts'
 import { dictionaries } from './locales.ts'
 import { TunerButton } from './components/TunerButton.tsx'
 import { SettingsPage } from './components/SettingsPage.tsx'
@@ -80,11 +82,14 @@ function settingsSurface(store: SettingsStore) {
 
 /**
  * The composer control as a slot component. The slot passes a loose prop bag;
- * this narrows it at the boundary so {@link TunerButton} can stay typed.
- * @param props - whatever the slot passes.
+ * this narrows it at the boundary so {@link TunerButton} can stay typed, and
+ * hands it the store its state is partitioned in.
+ * @param store - the plugin's per-Session rewrite store.
  */
-function composerSurface(props: ComposerSlotProps): ReactElement | null {
-  return createElement(TunerButton, props)
+function composerSurface(store: TunerStore) {
+  return function ComposerSurface(props: ComposerSlotProps): ReactElement | null {
+    return createElement(TunerButton, { ...props, store })
+  }
 }
 
 /**
@@ -93,11 +98,20 @@ function composerSurface(props: ComposerSlotProps): ReactElement | null {
  */
 export function apply(ctx: ClientContext): void {
   const store = createSettingsStore()
+  const tuner = createTunerStore()
   ctx.effect(() => ctx.locale.register(NS, dictionaries), 'prompt-tuner: dictionaries')
+  // In-flight rewrites belong to Sessions, not to the mounted control, so the
+  // plugin's own teardown is what stops them.
+  ctx.effect(
+    () => () => {
+      tuner.dispose()
+    },
+    'prompt-tuner: session state',
+  )
   const t = ctx.locale.bind(NS)
 
   ctx.slots.inject('conversation.input.right', () =>
-    ctx.slots.register({ name: 'conversation.input.right', id: ID, order: 1, locale: NS }, composerSurface),
+    ctx.slots.register({ name: 'conversation.input.right', id: ID, order: 1, locale: NS }, composerSurface(tuner)),
   )
 
   const Surface = settingsSurface(store)

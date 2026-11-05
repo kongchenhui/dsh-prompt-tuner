@@ -74,6 +74,13 @@ export type Translate = (key: string, params?: Record<string, string>) => string
 export interface ComposerSlotProps {
   readonly useInput?: (<T>(selector: (state: InputState) => T) => T) | undefined
   readonly inputActions?: InputActions | undefined
+  /**
+   * The Session this outlet belongs to. `conversation.input.right` is a strict
+   * session slot, so the harness always supplies it; it stays optional here
+   * because the slot prop bag is described structurally and an absent value is
+   * something the control has to handle rather than crash on.
+   */
+  readonly sessionId?: string | undefined
   readonly t: Translate
 }
 
