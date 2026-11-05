@@ -1,6 +1,6 @@
 {
   "name": "@kongchenhui/dsh-prompt-tuner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Composer prompt tuner: rewrite and correct the draft with one configurable prompt and model.",
   "type": "module",
   "main": "lib/index.js",

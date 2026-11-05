@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-06
+
 ### Changed
 
 - 按钮状态改为按会话隔离：切换会话再切回来，「恢复原文」、失败原因和进行中的优化都
@@ -21,4 +23,5 @@
 
 - 修复 Windows 上无法打开配置文件的问题。
 
+[0.1.2]: https://github.com/kongchenhui/dsh-prompt-tuner/releases/tag/v0.1.2
 [0.1.1]: https://github.com/kongchenhui/dsh-prompt-tuner/releases/tag/v0.1.1
