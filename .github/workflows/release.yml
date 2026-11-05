@@ -1,7 +1,9 @@
 name: Release
 
 # Push a tag like v0.1.0 to publish that version to npm.
-# Auth uses the classic automation token stored in the NPM_TOKEN repo secret.
+# Auth uses npm trusted publishing (OIDC): the workflow exchanges a short-lived
+# GitHub Actions identity token for a publish token, so no NPM_TOKEN secret is
+# stored anywhere. npm also attaches a provenance attestation automatically.
 on:
   push:
     tags:
@@ -9,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  # Mints the OIDC token that npm exchanges for a publish token.
+  id-token: write
 
 jobs:
   publish:
@@ -20,9 +24,25 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-        # setup-node writes this into the local .npmrc from NODE_AUTH_TOKEN.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Trusted publishing needs npm 11.5.1 or later; fail loudly instead of
+      # letting the publish step report a confusing 404.
+      - name: Require npm with trusted publishing support
+        run: |
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const raw = execFileSync("npm", ["--version"]).toString().trim();
+            const [major, minor, patch] = raw.split(".").map(Number);
+            const tooOld =
+              major < 11 ||
+              (major === 11 && minor < 5) ||
+              (major === 11 && minor === 5 && patch < 1);
+            if (tooOld) {
+              console.error(`::error::npm ${raw} cannot publish with OIDC, need >= 11.5.1; bump node-version or run npm install -g npm@latest`);
+              process.exit(1);
+            }
+            console.log(`npm ${raw} supports trusted publishing`);
+          '
 
       - name: Check tag matches package version
         run: |
@@ -32,13 +52,14 @@ jobs:
             exit 1
           fi
 
-      - name: Sanity checks
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
         run: |
-          node --check index.js
-          node --check client.js
+          npm run verify
+          # Confirms the published file set before the irreversible step.
           npm pack --dry-run
 
       - name: Publish to npm
         run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
