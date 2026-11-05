@@ -8,9 +8,11 @@
  * No harness package is imported: messages, streams, and tool results are
  * plain values here, so this module keeps working across harness versions.
  */
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { access, constants, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { homedir, release as osRelease } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /** Loader row name. */
 export const name = 'prompt-tuner'
@@ -263,37 +265,185 @@ function failure(error) {
   return { ok: false, code, message: error instanceof Error ? error.message : String(error) }
 }
 
-/**
- * Materialize the settings file and open it in the desktop's text editor.
- *
- * The file must exist before the opener runs, so an absent document is written
- * with the current defaults first. Platforms are handled the way the harness's
- * own native opener does: `open -t` on macOS, the default association on
- * Windows, `xdg-open` on Linux.
- * @param ctx - host plugin context.
- * @param store - settings store.
- */
-async function openSettingsFile(ctx, store) {
-  const subprocess = ctx.get('subprocess')
-  if (subprocess === undefined) throw Object.assign(new Error('当前部署没有 subprocess 服务，无法打开文件'), { code: 'NO_OPENER' })
-  // Guarantee the file exists with the current shape before handing it over.
-  await store.write({})
+/** Whether the settings document is already on disk. */
+async function exists(file) {
+  try {
+    await access(file, constants.F_OK)
+    return true
+  } catch {
+    return false
+  }
+}
 
-  const target = store.file
-  const platform = process.platform
-  const argv =
-    platform === 'darwin'
-      ? ['open', '-t', target]
-      : platform === 'win32'
-        ? ['cmd', '/c', 'start', '', target]
-        : ['xdg-open', target]
-  const executable = await subprocess.resolveExecutable(argv[0])
-  subprocess.spawn({
-    argv: [executable, ...argv.slice(1)],
-    cwd: dirname(target),
-    stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
-    graceMs: 5000,
+/**
+ * Encode one Windows path as the target Explorer can receive intact.
+ *
+ * Explorer parses its own command line and splits fields at commas and equals
+ * signs, so a raw path loses everything after the first separator and the shell
+ * then opens a different target — or the user's Documents folder — without
+ * reporting it. Both separators are escaped; nothing else is, because Explorer
+ * rejects percent-encoded non-ASCII in a file URI and opens Documents instead,
+ * while it resolves those characters when they arrive literally.
+ * @param windowsPath - absolute Windows path.
+ * @returns the target to hand Explorer as one argv element.
+ */
+function explorerTarget(windowsPath) {
+  const href = pathToFileURL(windowsPath, { windows: true }).href
+  // A run of escapes whose every byte starts above ASCII is one non-ASCII character.
+  return href
+    .replace(/(?:%[89A-F][0-9A-F])+/giu, (escaped) => {
+      try {
+        return decodeURIComponent(escaped)
+      } catch {
+        return escaped
+      }
+    })
+    .replaceAll(',', '%2C')
+    .replaceAll('=', '%3D')
+}
+
+/**
+ * Run one host command without a shell, capturing output and honoring abort.
+ *
+ * `window` is the Windows startup visibility: `hidden` for background commands,
+ * `visible` for a GUI handoff. Passing `hidden` for the Explorer handoff is the
+ * single most important line here — a hidden start also hides the editor window
+ * the user just asked to see, which reads as "nothing happened".
+ * @param command - executable path or PATH name.
+ * @param args - argv entries, never a shell string.
+ * @param signal - caller lifetime; abort terminates the child.
+ * @param window - Windows startup visibility.
+ * @returns captured stdout/stderr on exit 0.
+ */
+function runNativeCommand(command, args, signal, window) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      { encoding: 'utf8', signal, windowsHide: window === 'hidden' },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(Object.assign(new Error(error.message, { cause: error }), {
+            code: error.code,
+            stdout,
+            stderr,
+          }))
+          return
+        }
+        resolve({ stdout, stderr })
+      },
+    )
   })
+}
+
+/**
+ * Hand one target to Explorer, accepting its delegated-handoff exit code.
+ *
+ * Explorer exits 1 after passing the request to the desktop process already
+ * running, so exit 1 means the shell took it. Every other failure and every
+ * cancellation still rejects.
+ * @param args - Explorer argv: the encoded target to open it, or `/select,<target>` to reveal it.
+ * @param signal - caller lifetime; abort terminates the command.
+ */
+async function runExplorer(args, signal) {
+  try {
+    // SW_HIDE would also hide Explorer's window, not just console windows.
+    await runNativeCommand('explorer.exe', args, signal, 'visible')
+  } catch (error) {
+    signal.throwIfAborted()
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 1) throw error
+  }
+}
+
+/** Distinguish WSL from desktop Linux using its process and kernel markers. */
+function isWsl() {
+  if (present(process.env.WSL_DISTRO_NAME) || present(process.env.WSL_INTEROP)) return true
+  return osRelease().toLowerCase().includes('microsoft')
+}
+
+/** Whether one environment marker is set to a non-empty value. */
+function present(value) {
+  return value !== undefined && value !== ''
+}
+
+/** Translate a WSL path before handing it to the Windows desktop. */
+async function openWslPath(path, signal) {
+  const translated = await runNativeCommand('wslpath', ['-w', path], signal, 'hidden')
+  signal.throwIfAborted()
+  const windowsPath = translated.stdout.replace(/[\r\n]+$/u, '')
+  if (windowsPath === '') throw new Error('wslpath returned no Windows path')
+  await runExplorer([explorerTarget(windowsPath)], signal)
+}
+
+/**
+ * Whether opening a path can plausibly reach a desktop on this host.
+ *
+ * macOS and Windows always carry a desktop opener; Linux does when it is WSL
+ * (the Windows desktop takes the path) or a display server is announced. A
+ * headless host answers false, which lets the page show the path as text
+ * instead of offering a button that would spawn `xdg-open` into nothing.
+ * @returns true when handing a path to the native opener can work at all.
+ */
+function canOpenNativePath() {
+  const platform = process.platform
+  if (platform === 'darwin' || platform === 'win32') return true
+  if (platform !== 'linux') return false
+  return isWsl() || present(process.env.DISPLAY) || present(process.env.WAYLAND_DISPLAY)
+}
+
+/**
+ * Open one text document in the desktop's editor.
+ *
+ * This is a faithful port of the harness's own `openNativeTextFile`: the
+ * package that ships it is not resolvable from a profile, so the rules it
+ * encodes are restated here rather than reached through a service. Windows
+ * hands the path to `explorer.exe` as one argv element, because Explorer
+ * performs the same default-application resolution a double-click performs —
+ * including a default recorded only in the per-user `UserChoiceLatest` key,
+ * where an in-process association query finds none. macOS names the text-editor
+ * intent explicitly, so a `.json` association with some other application
+ * cannot consume the gesture.
+ * @param path - absolute path in this host's filesystem.
+ * @param signal - caller lifetime; abort terminates the native command.
+ */
+async function openNativeTextFile(path, signal) {
+  const platform = process.platform
+  if (platform === 'darwin') {
+    // `-t` forces the text editor; the plain open verb would use the association.
+    await runNativeCommand('open', ['-t', path], signal, 'hidden')
+    return
+  }
+  if (platform === 'win32') {
+    await runExplorer([explorerTarget(path)], signal)
+    return
+  }
+  if (platform === 'linux') {
+    if (isWsl()) {
+      await openWslPath(path, signal)
+      return
+    }
+    await runNativeCommand('xdg-open', [path], signal, 'hidden')
+    return
+  }
+  throw Object.assign(new Error(`当前平台 ${platform} 不支持原生打开器`), { code: 'NO_OPENER' })
+}
+
+/**
+ * Materialize the settings file when absent and open it in the desktop's editor.
+ *
+ * An existing document is opened as it stands: rewriting it first would race an
+ * editor that already holds it open, and on Windows the temp-file rename then
+ * fails with EPERM/EBUSY before any opener runs, so the gesture would report a
+ * save failure instead of opening the file the user asked for.
+ * @param store - settings store.
+ * @param signal - caller lifetime; aborting it stops the handoff.
+ */
+async function openSettingsFile(store, signal) {
+  if (!canOpenNativePath()) {
+    throw Object.assign(new Error('当前部署没有可用的桌面打开器（无图形会话）'), { code: 'NO_DESKTOP' })
+  }
+  if (!(await exists(store.file))) await store.write({})
+  await openNativeTextFile(store.file, signal)
 }
 
 function createHandler(ctx, store) {
@@ -301,8 +451,20 @@ function createHandler(ctx, store) {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname.replace(/\/+$/u, '')
     try {
       if (path === `${ROUTE_PATH}/open` && req.method === 'POST') {
-        await openSettingsFile(ctx, store)
-        sendJson(res, 200, { ok: true })
+        // The connection owns this request; a page that navigates away cancels
+        // the handoff instead of leaving it running unseen.
+        const abort = new AbortController()
+        const onClose = () => abort.abort()
+        res.on('close', onClose)
+        try {
+          await openSettingsFile(store, abort.signal)
+          if (!res.writableEnded && !res.destroyed) sendJson(res, 200, { ok: true })
+        } catch (error) {
+          if (abort.signal.aborted || res.writableEnded || res.destroyed) return
+          throw error
+        } finally {
+          res.off('close', onClose)
+        }
         return
       }
       if (path === ROUTE_PATH || path === `${ROUTE_PATH}/config`) {
