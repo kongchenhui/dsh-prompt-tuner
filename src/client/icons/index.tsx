@@ -1,5 +1,5 @@
 /**
- * Inline SVG icons for the composer control.
+ * Inline SVG icons for the composer control and the settings navigation row.
  *
  * They are local to this package rather than taken from ui-primitives because
  * the plugin imports no harness client value module; a `require()` the module
@@ -34,6 +34,30 @@ export function IconUndo(): ReactElement {
         strokeLinejoin="round"
       />
       <path d="M3 6.3h6.1a3.4 3.4 0 010 6.8H6.3" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * Sparkle over an underline: the plugin's own glyph for its settings page.
+ *
+ * The settings shell draws a generic gear for every section id it does not
+ * know, so contributing this mark is what replaces it. The stroke weights match
+ * the shell's shipped glyphs (1.3–1.4 at a 16px viewBox) because a heavier mark
+ * reads as a filled blob in a 16px navigation row; the geometry is inset so the
+ * star, the underline, and both strokes stay inside the viewBox.
+ * @param props - square edge requested by the shell, in pixels.
+ */
+export function IconTunerMark({ size }: { readonly size: number }): ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M8 1.9l1.6 3 3 1.6-3 1.6L8 11.1 6.4 8.1l-3-1.6 3-1.6z"
+        stroke="currentColor"
+        strokeWidth={1.3}
+        strokeLinejoin="round"
+      />
+      <path d="M4.9 13.4h6.2" stroke="currentColor" strokeWidth={1.35} strokeLinecap="round" />
     </svg>
   )
 }
