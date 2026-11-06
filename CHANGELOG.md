@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.3] - 2026-11-06
+
+### Fixed
+
+- 切走再切回后才完成的优化现在会正确填进输入框：此前写回目标被固定为发起优化那一刻的
+  输入壳引用，而 harness 在切换会话时会销毁并重建输入壳，导致结果被写进已销毁的编辑器而
+  静默丢失（按钮显示「恢复原文」但输入框仍是旧内容）。写回目标改为跟随该会话当前挂载的
+  输入框；若完成时什么都不在，则由重挂载后的补偿逻辑补写一次，且不覆盖切走期间的手动编辑。
+- 优化进行中修改草稿会立即自动取消本次优化：结果建立在修改前的文本上，落地只会覆盖用户
+  刚输入的内容，也没有必要为过时的答案继续消耗模型额度。
+
 ## [0.1.2] - 2026-11-06
 
 ### Changed
@@ -21,5 +32,6 @@
 
 - 修复 Windows 上无法打开配置文件的问题。
 
+[0.1.3]: https://github.com/kongchenhui/dsh-prompt-tuner/releases/tag/v0.1.3
 [0.1.2]: https://github.com/kongchenhui/dsh-prompt-tuner/releases/tag/v0.1.2
 [0.1.1]: https://github.com/kongchenhui/dsh-prompt-tuner/releases/tag/v0.1.1
