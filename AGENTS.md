@@ -50,7 +50,7 @@ docs/demo.gif      README 里的演示图
 3. **浏览器端产物是 closure factory**：`window.__ModuleLoader__.load({ id, factory })`，`id` 取自包名。banner/footer/intro 由 tsdown 配置生成，不要手改产物或另起打包方式。
 4. **状态不要放在组件里**。`conversation.input.right` 是按 Session 的槽，harness 每次切换会话都会重挂载，组件局部状态必然丢失。需要跨切换存活的东西放进 `tuner-store.ts`，按 `sessionId` 分区（相位、原文、改写文本、失败原因、在途 `AbortController` 都在里面）；只有纯 UI 的 `hover` 留在组件内。设置是全局一份，放 `settings-store.ts`。
 5. **不要新增模块级可变单例**。两个 store 都由 `apply()` 创建并随插件卸载销毁，避免同页多个 profile 互相串状态。
-6. **每个会话的在途请求只属于它自己**：切走不中止，结果写回发起它的会话；只有显式取消或插件 teardown 才 abort（`dispose()`）。写回可能落到已被拆掉的输入壳上，`detachedWrite` 负责在重挂载时补写一次，且只在草稿仍等于改写前原文时才写。
+6. **每个会话的在途请求只属于它自己**：切走不中止，结果写回发起它的会话；只有显式取消或插件 teardown 才 abort（`dispose()`）。写回目标是**该会话当前挂载的控件**：控件挂载时经 `attach` 登记自己的输入框，请求完成时写进当时登记的那个——harness 的 `inputActions` 属于随会话切换而销毁重建的输入壳，捕获发起那一刻的闭包会把结果写进已销毁的编辑器（这正是"切走再切回后结果显示不出来"的根因）。什么都没登记时不写，由控件重挂载后的 `enhancedSeen` 协调补写，且只在草稿仍等于改写前原文时才写。
 7. **宿主路由契约**：前缀 `/dsh-prompt-tuner`，端点 `GET|POST /config`、`GET /models`、`POST /rewrite`、`POST /open`。业务失败一律 HTTP 200 + `{ ok: false, code, message }`（页面要显示 message，5xx 只会被浏览器吞成通用错误）；只有被取消的请求允许不写响应。前缀在两处出现（`src/host/http.ts` 的 `ROUTE_PATH`、`src/client/api.ts` 的 `ROUTE_SEGMENT`），改一处必须同时改另一处。
 8. **取消与超时**：请求靠连接关闭触发 `AbortController`，另加 90s 超时（`REQUEST_TIMEOUT_MS`）；草稿上限 12000 字符（`MAX_INPUT_CHARS`），请求体上限 1MB。别把"取消"实现成等模型跑完再丢弃。
 9. **设置文件**放在 harness home（`$DSH_HOME`，未设置时取 harness 默认 home）下的 `prompt-tuner/settings.json`，路径只从 `settingsPath()` 取，不要硬编码。写入走临时文件 + rename 原子替换；读取一律经过 `normalize()` 投影，任何旧版或被手改坏的文档都必须退化成一个可用值而不是在渲染处抛错。
@@ -79,7 +79,7 @@ docs/demo.gif      README 里的演示图
 ## 测试
 
 - vitest 默认 `node` 环境；浏览器端用例在文件顶部用 `/** @vitest-environment jsdom */` docblock 显式切 jsdom，文件名用 `*.client.spec.tsx`。
-- 浏览器端不渲染真实输入框：给 `TunerButton` 注入假的 `useInput` / `inputActions` / `sessionId`；`inputActions` 必须按 Session 稳定（模拟 harness 的作用域归属），每次挂载新建一份会掩盖回归。参考 `tests/tuner-button.client.spec.tsx`。
+- 浏览器端不渲染真实输入框：给 `TunerButton` 注入假的 `useInput` / `inputActions` / `sessionId`；fixture 要模拟 harness 的真实生命周期——草稿按 Session 持久，但 `inputActions` 属于输入壳，**每次挂载都要新建一份**且卸载后写入即被丢弃。让 actions 跨挂载稳定会掩盖"结果写进已销毁输入壳"这一类回归（曾经正是 fixture 掩盖了切走再切回后结果丢失的 bug）。参考 `tests/tuner-button.client.spec.tsx`。
 - host 侧单测不要读写真实的 harness home：用 `mkdtemp` 造临时目录（见 `tests/settings.spec.ts`），避免污染用户设置。
 - 修 bug 先写能复现的用例；新增行为至少覆盖失败与取消路径。
 

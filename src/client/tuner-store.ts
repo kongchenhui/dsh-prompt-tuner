@@ -11,10 +11,18 @@
  * `AbortController`. A request is owned by the Session that started it, so
  * switching away neither cancels it nor lets its result reach another Session.
  *
- * The store outlives the control: a rewrite resolves and writes back through
- * the Session's own `setDraft` even while a different Session is on screen.
- * Only an explicit cancel or plugin teardown aborts it — cancelling the tokens
- * a user already asked for by merely looking elsewhere would be a surprise.
+ * The write-back target is the control the Session has mounted *now*, not the
+ * one that pressed the button: the harness binds `inputActions` to a per-Session
+ * input shell, tears that shell down on switch-away, and mints a fresh one on
+ * switch-back, so a closure captured at press time would write into a disposed
+ * editor and silently vanish. Controls register their composer through
+ * {@link TunerStore.attach} while mounted; a rewrite resolves through whatever
+ * is registered at that moment, or nothing — the control re-applies the stored
+ * rewrite on remount when the result never reached the composer.
+ *
+ * Only an explicit cancel or plugin teardown aborts a request — cancelling the
+ * tokens a user already asked for by merely looking elsewhere would be a
+ * surprise.
  *
  * The harness store engine is not reachable from a third-party bundle, so this
  * is the smallest equivalent: immutable snapshots, one listener set per
@@ -55,15 +63,6 @@ export interface TunerObserved {
    * separate flag keeps an empty draft from being mistaken for "unrecorded".
    */
   readonly failureBaseline: string | undefined
-  /**
-   * Whether the last write-back went to a detached Session.
-   *
-   * A Session that is not on screen has had its input shell torn down by the
-   * harness, so the write is dropped and the composer still shows the pre-rewrite
-   * draft. The control re-applies the stored rewrite once on remount when this
-   * is set — and only then, so an on-screen rewrite is never written twice.
-   */
-  readonly detachedWrite: boolean
 }
 
 /** The session-partitioned store both surfaces share. */
@@ -77,12 +76,24 @@ export interface TunerStore {
   /** Update observation bookkeeping without publishing. */
   note(sessionId: string, patch: Partial<TunerObserved>): void
   /**
-   * Start one rewrite for a Session.
+   * Register the mounted control's composer as this Session's write-back
+   * target. `inputActions` belongs to the harness's per-Session input shell,
+   * which is torn down and replaced across a switch, so the registration is
+   * per mount, not per request. The returned detach clears the registration
+   * only if it is still the one registered — a StrictMode double-mount or a
+   * re-render must not unregister a newer control's composer.
+   * @param sessionId - the Session this mount belongs to.
+   * @param write - writes text into that Session's composer.
+   * @returns the detach callback for unmount.
+   */
+  attach(sessionId: string, write: (text: string) => void): () => void
+  /**
+   * Start one rewrite for a Session. The result is written back through
+   * whatever {@link attach} has registered when it resolves.
    * @param sessionId - the Session that owns the request.
    * @param draft - the text to rewrite; blank is refused.
-   * @param applyDraft - writes the result back into that same Session.
    */
-  start(sessionId: string, draft: string, applyDraft: (text: string) => void): void
+  start(sessionId: string, draft: string): void
   /** Abort one Session's in-flight request and return it to idle. */
   cancel(sessionId: string): void
   /** Return one Session to idle and drop its observation bookkeeping. */
@@ -106,7 +117,6 @@ const IDLE: TunerSnapshot = Object.freeze({
 const UNOBSERVED: TunerObserved = Object.freeze({
   enhancedSeen: false,
   failureBaseline: undefined,
-  detachedWrite: false,
 })
 
 /** Everything retained for one Session. */
@@ -117,8 +127,12 @@ interface SessionRecord {
   observed: TunerObserved
   /** The request this Session owns, if any. */
   controller: AbortController | undefined
-  /** Where this Session's rewritten text is written back. */
-  applyDraft: ((text: string) => void) | undefined
+  /**
+   * The mounted control's composer, registered through `attach`. Follows the
+   * mount lifecycle rather than any single request's, so a rewrite resolving
+   * after a switch writes through the control mounted now.
+   */
+  write: ((text: string) => void) | undefined
   readonly listeners: Set<() => void>
   /** Last time this record was read or written, for eviction order. */
   touchedAt: number
@@ -168,7 +182,7 @@ export function createTunerStore(): TunerStore {
       snapshot: IDLE,
       observed: { ...UNOBSERVED },
       controller: undefined,
-      applyDraft: undefined,
+      write: undefined,
       listeners: new Set(),
       touchedAt: now(),
     }
@@ -177,15 +191,20 @@ export function createTunerStore(): TunerStore {
     return record
   }
 
-  /** Abort whatever the record owns and forget it, without publishing. */
+  /**
+   * Abort whatever the record owns and settle it, without publishing.
+   *
+   * The write-back registration deliberately survives: it belongs to the
+   * mounted control, not to any request, so a later `start` on the same mount
+   * must still be able to write through it.
+   */
   const drop = (record: SessionRecord): void => {
     record.controller?.abort()
     record.controller = undefined
-    record.applyDraft = undefined
     record.observed = { ...UNOBSERVED }
   }
 
-  const start: TunerStore['start'] = (sessionId, draft, applyDraft) => {
+  const start: TunerStore['start'] = (sessionId, draft) => {
     const record = ensure(sessionId)
     // The control maps a press while running to `cancel`; a second start can
     // only be a stale event, and replacing the live request would strand it.
@@ -194,7 +213,6 @@ export function createTunerStore(): TunerStore {
 
     const controller = new AbortController()
     record.controller = controller
-    record.applyDraft = applyDraft
     record.observed = { ...UNOBSERVED }
     publish(record, { phase: 'running', original: draft, enhanced: '', failure: undefined })
 
@@ -218,19 +236,21 @@ export function createTunerStore(): TunerStore {
           })
           return
         }
-        try {
-          applyDraft(text)
-        } catch (error) {
-          // The Session's input shell can be gone (closed or replaced) by the
-          // time a rewrite lands; reporting beats throwing into a promise.
-          finish(record, controller, { phase: 'failed', original: draft, enhanced: '', failure: error })
-          return
+        // Write through the composer registered right now. The one that pressed
+        // the button may be long gone: the harness tore its input shell down on
+        // switch-away, so a write captured then would vanish into a disposed
+        // editor. With nothing registered the write is simply skipped — the
+        // control re-applies the stored rewrite once the Session remounts.
+        if (record.write !== undefined) {
+          try {
+            record.write(text)
+          } catch (error) {
+            // The composer can still refuse (a shell dying between the check
+            // and the call); reporting beats throwing into a promise.
+            finish(record, controller, { phase: 'failed', original: draft, enhanced: '', failure: error })
+            return
+          }
         }
-        // No listener means no control is mounted for this Session: the harness
-        // tore its input shell down, so `applyDraft` above reached nothing and
-        // the composer still shows the pre-rewrite draft. Record that so the
-        // control re-applies the rewrite when the Session comes back.
-        record.observed = { ...UNOBSERVED, detachedWrite: record.listeners.size === 0 }
         finish(record, controller, { phase: 'done', original: draft, enhanced: text, failure: undefined })
       },
       (error: unknown) => {
@@ -245,7 +265,6 @@ export function createTunerStore(): TunerStore {
   const finish = (record: SessionRecord, controller: AbortController, next: TunerSnapshot): void => {
     if (record.controller !== controller) return
     record.controller = undefined
-    record.applyDraft = undefined
     publish(record, next)
   }
 
@@ -287,6 +306,17 @@ export function createTunerStore(): TunerStore {
       const record = records.get(sessionId)
       if (record === undefined) return
       record.observed = { ...record.observed, ...patch }
+    },
+    attach(sessionId, write) {
+      const record = ensure(sessionId)
+      record.touchedAt = now()
+      record.write = write
+      return () => {
+        // Identity-guarded, like the harness's own `bindDraftPersistence`: a
+        // re-render or StrictMode remount must not detach a newer control's
+        // registration.
+        if (record.write === write) record.write = undefined
+      }
     },
     start,
     cancel,

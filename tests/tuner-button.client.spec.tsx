@@ -26,6 +26,7 @@ const t = (key: string): string => key
 /** One settleable request per start, keyed by the draft it carried. */
 interface Pending {
   readonly text: string
+  readonly signal: AbortSignal | undefined
   succeed(text: string): void
   fail(error: unknown): void
 }
@@ -43,6 +44,7 @@ function stubFetch(): Pending[] {
     return new Promise((resolve, reject) => {
       pending.push({
         text,
+        signal: init?.signal ?? undefined,
         succeed(rewritten: string) {
           resolve({
             ok: true,
@@ -64,25 +66,35 @@ const settle = (): Promise<void> =>
     await new Promise((done) => setTimeout(done, 0))
   })
 
+/** A write-back target that discards what it is given. */
+function ignore(): void {
+  // Intentionally inert: this mount has no composer to write into.
+}
+
 /** The button currently on screen. */
 const button = (): HTMLElement => screen.getByRole('button')
 
 /**
- * One Session's durable composer: stable actions plus the live draft.
+ * One Session's durable composer.
  *
- * `attached` mirrors the harness: an input shell outlives the control only
- * while the Session stays selected. A detached Session has had its shell torn
- * down, so a write-back into it is silently dropped — which is exactly the
- * case the control has to recover from on remount.
+ * `draft` survives every remount — the harness persists drafts per Session.
+ * `inputActions` does NOT: it belongs to the session's input shell, and the
+ * harness tears that shell down on switch-away and mints a fresh one on
+ * switch-back. Each mount therefore creates its own actions object whose
+ * writes land only while that mount is attached; a write after `unmount()`
+ * is silently dropped, exactly as a write into a disposed Lexical editor is.
  */
 interface Composer {
   draft: string
-  attached: boolean
-  readonly inputActions: { setDraft(text: string): void }
 }
 
 /** The draft each Session's composer holds, surviving every remount. */
 const composers = new Map<string, Composer>()
+
+/** One mount's live input shell: its own actions identity and lifecycle. */
+interface Shell {
+  readonly inputActions: { setDraft(text: string): void }
+}
 
 /** A mounted control and the operations a switch needs. */
 interface Mounted {
@@ -96,16 +108,7 @@ interface Mounted {
 function composerFor(sessionId: string, initial: string): Composer {
   const existing = composers.get(sessionId)
   if (existing !== undefined) return existing
-  const record: Composer = {
-    draft: initial,
-    attached: false,
-    inputActions: {
-      setDraft(text: string) {
-        if (!record.attached) return
-        record.draft = text
-      },
-    },
-  }
+  const record: Composer = { draft: initial }
   composers.set(sessionId, record)
   return record
 }
@@ -125,15 +128,26 @@ function editComposer(sessionId: string, text: string): void {
  */
 function mount(store: ReturnType<typeof createTunerStore>, sessionId: string, initial: string): Mounted {
   const composer = composerFor(sessionId, initial)
+  // This mount's own shell: writes land only while it is the mounted one, and
+  // once it unmounts the shell is gone for good — a late write through a stale
+  // actions object is dropped, as it is into a disposed Lexical editor.
+  let live = true
+  const shell: Shell = {
+    inputActions: {
+      setDraft(text: string) {
+        if (!live) return
+        composer.draft = text
+      },
+    },
+  }
   const useInput = <T,>(selector: (state: { draft: string; phase: string }) => T): T =>
     selector({ draft: composer.draft, phase: 'idle' })
-  const props = { useInput, inputActions: composer.inputActions, sessionId, store, t }
-  composer.attached = true
+  const props = { useInput, inputActions: shell.inputActions, sessionId, store, t }
   const view = render(<TunerButton {...props} />)
   return {
     view,
     unmount() {
-      composer.attached = false
+      live = false
       view.unmount()
     },
     sync(draft) {
@@ -289,6 +303,58 @@ describe('a Session switch', () => {
   })
 })
 
+describe('a rewrite that completes after switching back', () => {
+  it('writes the result into the recomposed composer (reported sequence)', async () => {
+    // The reported sequence: press enhance, switch away, switch back, and the
+    // request resolves only now. The switch-back remounted the control with a
+    // fresh input shell — the captured write-back must follow it.
+    const pending = stubFetch()
+    const store = createTunerStore()
+    const first = mount(store, 'a', 'my draft')
+
+    fireEvent.click(button())
+    expect(button().dataset.state).toBe('running')
+    first.unmount()
+
+    mount(store, 'a', 'my draft')
+    pending[0]?.succeed('better draft')
+    await settle()
+
+    expect(composers.get('a')?.draft).toBe('better draft')
+    expect(button().dataset.state).toBe('done')
+  })
+
+  it('keeps the restore offer working after the switch-back write', async () => {
+    const pending = stubFetch()
+    const store = createTunerStore()
+    const first = mount(store, 'a', 'my draft')
+
+    fireEvent.click(button())
+    first.unmount()
+    mount(store, 'a', 'my draft')
+    pending[0]?.succeed('better draft')
+    await settle()
+
+    fireEvent.click(button())
+    expect(composers.get('a')?.draft).toBe('my draft')
+    expect(button().dataset.state).toBe('idle')
+  })
+
+  it('never lets one Session’s rewrite reach another Session’s composer', async () => {
+    const pending = stubFetch()
+    const store = createTunerStore()
+    const a = mount(store, 'a', 'alpha')
+
+    fireEvent.click(button())
+    a.unmount()
+    mount(store, 'b', 'beta')
+    pending[0]?.succeed('alpha rewritten')
+    await settle()
+
+    expect(composers.get('b')?.draft).toBe('beta')
+  })
+})
+
 describe('a rewrite that landed while detached', () => {
   it('applies the stored rewrite when the Session comes back', async () => {
     const pending = stubFetch()
@@ -325,6 +391,42 @@ describe('a rewrite that landed while detached', () => {
     mount(store, 'a', 'typed while away')
     expect(composers.get('a')?.draft).toBe('typed while away')
     expect(button().dataset.state).toBe('idle')
+  })
+})
+
+describe('a draft edited while the rewrite is running', () => {
+  it('cancels the request and keeps the typing', async () => {
+    // Typing while the request is in flight makes the result obsolete — it
+    // was built on the pre-edit text. Cancel immediately instead of paying
+    // for an answer nobody can use.
+    const pending = stubFetch()
+    const store = createTunerStore()
+    const mounted = mount(store, 'a', 'my draft')
+
+    fireEvent.click(button())
+    expect(button().dataset.state).toBe('running')
+
+    mounted.sync('typed while running')
+    await settle()
+    expect(pending[0]?.signal?.aborted).toBe(true)
+    expect(button().dataset.state).toBe('idle')
+
+    // The late resolution of the aborted request must stay discarded.
+    pending[0]?.succeed('better draft')
+    await settle()
+    expect(composers.get('a')?.draft).toBe('typed while running')
+    expect(button().dataset.state).toBe('idle')
+  })
+
+  it('does not cancel when the draft is unchanged', async () => {
+    const pending = stubFetch()
+    const store = createTunerStore()
+    const mounted = mount(store, 'a', 'my draft')
+
+    fireEvent.click(button())
+    mounted.sync('my draft')
+    expect(pending[0]?.signal?.aborted).toBe(false)
+    expect(button().dataset.state).toBe('running')
   })
 })
 
@@ -390,11 +492,11 @@ describe('a draft edited after a rewrite', () => {
 describe('a slot without what it needs', () => {
   it('renders nothing without a Session', () => {
     const store = createTunerStore()
-    const composer = composerFor('a', 'draft')
+    composerFor('a', 'draft')
     const { container } = render(
       <TunerButton
         useInput={(selector) => selector({ draft: 'draft', phase: 'idle' })}
-        inputActions={composer.inputActions}
+        inputActions={{ setDraft: ignore }}
         store={store}
         t={t}
       />,
