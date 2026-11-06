@@ -82,7 +82,8 @@ describe('start', () => {
     const store = createTunerStore()
     const target = sink()
 
-    store.start('a', 'draft', target.apply)
+    store.attach('a', target.apply)
+    store.start('a', 'draft')
     expect(store.getSnapshot('a').phase).toBe('running')
     expect(calls[0]?.text).toBe('draft')
 
@@ -99,7 +100,7 @@ describe('start', () => {
   it('refuses a blank draft', () => {
     const calls = stubFetch()
     const store = createTunerStore()
-    store.start('a', '   ', noop)
+    store.start('a', '   ')
     expect(store.getSnapshot('a').phase).toBe('idle')
     expect(calls).toHaveLength(0)
   })
@@ -107,8 +108,8 @@ describe('start', () => {
   it('ignores a second start while one is live', () => {
     const calls = stubFetch()
     const store = createTunerStore()
-    store.start('a', 'first', noop)
-    store.start('a', 'second', noop)
+    store.start('a', 'first')
+    store.start('a', 'second')
     expect(calls).toHaveLength(1)
     expect(calls[0]?.text).toBe('first')
   })
@@ -117,7 +118,8 @@ describe('start', () => {
     const calls = stubFetch()
     const store = createTunerStore()
     const target = sink()
-    store.start('a', 'draft', target.apply)
+    store.attach('a', target.apply)
+    store.start('a', 'draft')
     calls[0]?.succeed('   ')
     await flush()
     expect(store.getSnapshot('a').phase).toBe('failed')
@@ -128,7 +130,7 @@ describe('start', () => {
     const calls = stubFetch()
     const store = createTunerStore()
     const failure = new Error('HTTP 500')
-    store.start('a', 'draft', noop)
+    store.start('a', 'draft')
     calls[0]?.fail(failure)
     await flush()
     expect(store.getSnapshot('a').failure).toBe(failure)
@@ -137,9 +139,10 @@ describe('start', () => {
   it('reports a write-back that throws instead of leaving it unhandled', async () => {
     const calls = stubFetch()
     const store = createTunerStore()
-    store.start('a', 'draft', () => {
+    store.attach('a', () => {
       throw new Error('composer gone')
     })
+    store.start('a', 'draft')
     calls[0]?.succeed('rewritten')
     await flush()
     const after = store.getSnapshot('a')
@@ -155,8 +158,10 @@ describe('session isolation', () => {
     const a = sink()
     const b = sink()
 
-    store.start('a', 'alpha', a.apply)
-    store.start('b', 'beta', b.apply)
+    store.attach('a', a.apply)
+    store.start('a', 'alpha')
+    store.attach('b', b.apply)
+    store.start('b', 'beta')
     calls[1]?.succeed('B rewritten')
     await flush()
 
@@ -180,8 +185,10 @@ describe('session isolation', () => {
     const a = sink()
     const b = sink()
 
-    store.start('a', 'alpha', a.apply)
-    store.start('b', 'beta', b.apply)
+    store.attach('a', a.apply)
+    store.start('a', 'alpha')
+    store.attach('b', b.apply)
+    store.start('b', 'beta')
 
     store.cancel('a')
     expect(store.getSnapshot('a').phase).toBe('idle')
@@ -200,7 +207,8 @@ describe('session isolation', () => {
     const store = createTunerStore()
     const a = sink()
 
-    store.start('a', 'alpha', a.apply)
+    store.attach('a', a.apply)
+    store.start('a', 'alpha')
     store.cancel('a')
     // A late resolution after cancellation must be discarded.
     calls[0]?.succeed('late')
@@ -218,7 +226,7 @@ describe('session isolation', () => {
     store.subscribe('a', seenA)
     store.subscribe('b', seenB)
 
-    store.start('a', 'alpha', noop)
+    store.start('a', 'alpha')
     expect(seenA).toHaveBeenCalledTimes(1)
     expect(seenB).not.toHaveBeenCalled()
   })
@@ -228,7 +236,7 @@ describe('surviving a Session switch', () => {
   it('keeps the done state readable after every listener unsubscribes', async () => {
     const calls = stubFetch()
     const store = createTunerStore()
-    store.start('a', 'draft', noop)
+    store.start('a', 'draft')
     calls[0]?.succeed('rewritten')
     await flush()
 
@@ -240,52 +248,116 @@ describe('surviving a Session switch', () => {
     expect(store.getSnapshot('a').original).toBe('draft')
   })
 
-  it('marks a write-back that landed while the Session was detached', async () => {
+  it('writes through whatever composer is attached when the request resolves', async () => {
+    // The harness tears a Session's input shell down on switch-away and mints
+    // a fresh one on switch-back, so the composer that pressed the button is
+    // gone by the time the result lands. The write must follow the mount the
+    // Session has now, never the one that started the request.
     const calls = stubFetch()
     const store = createTunerStore()
-    const target = sink()
+    const started = sink()
+    const mounted = sink()
 
-    const unsubscribe = store.subscribe('a', noop)
-    store.start('a', 'draft', target.apply)
-    unsubscribe()
+    store.attach('a', started.apply)
+    store.start('a', 'draft')
+    store.attach('a', mounted.apply) // switch-back: a fresh shell registered itself
 
     calls[0]?.succeed('rewritten')
     await flush()
 
-    // The control is gone, so the harness tore its input shell down and the
-    // write went nowhere — the coming mount has to apply it again.
-    expect(store.observe('a').detachedWrite).toBe(true)
-    expect(target.calls).toEqual(['rewritten'])
+    expect(started.calls).toEqual([])
+    expect(mounted.calls).toEqual(['rewritten'])
+    expect(store.getSnapshot('a').phase).toBe('done')
   })
 
-  it('does not mark a write-back that landed while the Session was on screen', async () => {
+  it('skips the write when nothing is attached and still settles on done', async () => {
     const calls = stubFetch()
     const store = createTunerStore()
     const target = sink()
 
-    store.subscribe('a', noop)
-    store.start('a', 'draft', target.apply)
+    store.attach('a', target.apply)
+    store.start('a', 'draft')
+    // Unregister every copy of the target: the shell is gone, nothing is
+    // mounted, so the resolution has no composer to write into.
+    const first = store.attach('a', target.apply)
+    const second = store.attach('a', target.apply)
+    first()
+    first()
+    second()
+    second()
+
     calls[0]?.succeed('rewritten')
     await flush()
 
-    expect(store.observe('a').detachedWrite).toBe(false)
+    expect(target.calls).toEqual([])
+    expect(store.getSnapshot('a').phase).toBe('done')
+    expect(store.getSnapshot('a').enhanced).toBe('rewritten')
   })
 
-  it('lets an in-flight request finish while nothing is mounted', async () => {
+  it('keeps the write target across a cancel and a later start on the same mount', async () => {
+    // `cancel` must not clear the mounted control's registration: the very
+    // next press on the same mount would otherwise write into nothing.
     const calls = stubFetch()
     const store = createTunerStore()
     const target = sink()
 
-    const unsubscribe = store.subscribe('a', noop)
-    store.start('a', 'draft', target.apply)
-    unsubscribe()
+    store.attach('a', target.apply)
+    store.start('a', 'first')
+    store.cancel('a')
+
+    store.start('a', 'second')
+    calls[1]?.succeed('second rewritten')
+    await flush()
+
+    expect(target.calls).toEqual(['second rewritten'])
+    expect(store.getSnapshot('a').phase).toBe('done')
+  })
+
+  it('keeps a write-back that landed while the Session was detached reappliable', async () => {
+    const calls = stubFetch()
+    const store = createTunerStore()
+
+    store.start('a', 'draft')
+    // Nothing is attached — the harness tore the input shell down and no
+    // control is mounted — so the write is skipped and the rewrite stays
+    // stored for the coming mount to re-apply.
+    calls[0]?.succeed('rewritten')
+    await flush()
+
+    expect(store.getSnapshot('a').phase).toBe('done')
+    expect(store.getSnapshot('a').enhanced).toBe('rewritten')
+  })
+
+  it('does not let a stale registration overwrite a newer one', async () => {
+    const calls = stubFetch()
+    const store = createTunerStore()
+    const stale = sink()
+    const fresh = sink()
+
+    store.attach('a', stale.apply)
+    store.attach('a', fresh.apply)
+    store.start('a', 'draft')
+
+    calls[0]?.succeed('rewritten')
+    await flush()
+    expect(stale.calls).toEqual([])
+    expect(fresh.calls).toEqual(['rewritten'])
+  })
+
+  it('lets an in-flight request finish and write while nothing is mounted', async () => {
+    // Nothing registered means nothing to write into; the snapshot still
+    // settles on done so a later mount can re-apply the stored rewrite.
+    const calls = stubFetch()
+    const store = createTunerStore()
+
+    store.start('a', 'draft')
 
     expect(calls[0]?.signal?.aborted).toBe(false)
     calls[0]?.succeed('rewritten')
     await flush()
 
     expect(store.getSnapshot('a').phase).toBe('done')
-    expect(target.calls).toEqual(['rewritten'])
+    expect(store.getSnapshot('a').enhanced).toBe('rewritten')
   })
 })
 
@@ -303,7 +375,7 @@ describe('observation bookkeeping', () => {
   it('resets a Session and clears its bookkeeping', async () => {
     const calls = stubFetch()
     const store = createTunerStore()
-    store.start('a', 'draft', noop)
+    store.start('a', 'draft')
     calls[0]?.succeed('rewritten')
     await flush()
     store.note('a', { enhancedSeen: true })
@@ -331,7 +403,7 @@ describe('retention', () => {
     const total = MAX_RETAINED_SESSIONS + 1
 
     for (let index = 0; index < total; index += 1) {
-      store.start(`s${String(index)}`, 'draft', noop)
+      store.start(`s${String(index)}`, 'draft')
       calls[index]?.succeed('rewritten')
       await flush()
     }
@@ -345,9 +417,9 @@ describe('retention', () => {
     const calls = stubFetch()
     const store = createTunerStore()
 
-    store.start('busy', 'draft', noop)
+    store.start('busy', 'draft')
     for (let index = 0; index < MAX_RETAINED_SESSIONS + 1; index += 1) {
-      store.start(`s${String(index)}`, 'draft', noop)
+      store.start(`s${String(index)}`, 'draft')
       calls[index + 1]?.succeed('rewritten')
       await flush()
     }
@@ -362,7 +434,7 @@ describe('retention', () => {
 
     store.subscribe('watched', noop)
     for (let index = 0; index < MAX_RETAINED_SESSIONS + 1; index += 1) {
-      store.start(`s${String(index)}`, 'draft', noop)
+      store.start(`s${String(index)}`, 'draft')
       calls[index]?.succeed('rewritten')
       await flush()
     }
@@ -381,8 +453,10 @@ describe('dispose', () => {
     const store = createTunerStore()
     const a = sink()
     const b = sink()
-    store.start('a', 'alpha', a.apply)
-    store.start('b', 'beta', b.apply)
+    store.attach('a', a.apply)
+    store.start('a', 'alpha')
+    store.attach('b', b.apply)
+    store.start('b', 'beta')
 
     store.dispose()
     expect(calls[0]?.signal?.aborted).toBe(true)

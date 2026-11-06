@@ -20,7 +20,10 @@ import prettier from 'eslint-config-prettier'
 
 export default defineConfig(
   {
-    ignores: ['lib/', 'node_modules/', '*.tgz', 'coverage/'],
+    // `.agents/` holds session-scoped agent worktrees: full checkouts of this
+    // repository that would otherwise be linted a second time through the
+    // outer project's tsconfig, which does not cover them.
+    ignores: ['lib/', 'node_modules/', '*.tgz', 'coverage/', '.agents/'],
   },
 
   js.configs.recommended,

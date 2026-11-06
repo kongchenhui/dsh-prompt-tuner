@@ -13,8 +13,7 @@
  * `sessionId`. This component is a view — it subscribes to its own Session and
  * forwards presses. Only `hover` is local, because it is genuinely about this
  * mounted element rather than about the Session.
- */
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+ */ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import type { ReactElement } from 'react'
 import { conciseError } from '../errors.ts'
 import { IconSpinner, IconSparkle, IconUndo } from '../icons/index.tsx'
@@ -68,31 +67,39 @@ function TunerControl({
   )
   const local = snapshot.phase
 
+  // Register this mount's composer as the Session's write-back target. The
+  // harness binds `inputActions` to a per-Session input shell that is torn
+  // down and replaced across a switch, so the registration must follow the
+  // mount: a rewrite resolving after a switch-back has to write through the
+  // control that is mounted now, never the one that pressed the button.
+  useEffect(() => {
+    const detach = store.attach(sessionId, (text) => {
+      inputActions.setDraft(text)
+    })
+    return detach
+  }, [inputActions, sessionId, store])
+
   // A hand-edited draft after a rewrite ends the restore offer. The published
   // draft can trail our own setDraft, so cancel only once the rewritten text
   // has actually been observed in the composer.
   //
-  // The other half: a rewrite that lands while its Session is detached writes
-  // through an input shell the harness already tore down, so the result is
-  // dropped and the composer still shows the pre-rewrite text. The store marks
-  // that case; this re-applies the stored rewrite once on remount. It writes
-  // only while the composer still holds exactly the text the rewrite started
-  // from — anything else there is a real edit, which wins.
+  // The other half: a rewrite that settled before this mount registered its
+  // composer — it resolved while the Session was away, or into the previous
+  // shell — never reached the composer, which still shows the pre-rewrite
+  // text. While the composer holds exactly the text the rewrite started from,
+  // apply the stored rewrite once; re-applying the same text is idempotent
+  // (the harness's editor no-ops on identical drafts). Anything else there is
+  // a real edit, which wins.
   useEffect(() => {
     if (local !== 'done') {
       store.note(sessionId, { enhancedSeen: false })
       return
     }
     if (draft === snapshot.enhanced) {
-      store.note(sessionId, { enhancedSeen: true, detachedWrite: false })
+      store.note(sessionId, { enhancedSeen: true })
       return
     }
-    if (draft === snapshot.original) {
-      // The composer still holds the pre-rewrite text. Either our write-back
-      // has not been published yet (wait it out), or it landed on a detached
-      // shell and was dropped — in which case apply the stored rewrite once.
-      if (!store.observe(sessionId).detachedWrite) return
-      store.note(sessionId, { detachedWrite: false })
+    if (!store.observe(sessionId).enhancedSeen && draft === snapshot.original) {
       inputActions.setDraft(snapshot.enhanced)
       return
     }
@@ -101,6 +108,16 @@ function TunerControl({
     // their work would be a trap.
     store.reset(sessionId)
   }, [draft, inputActions, local, sessionId, snapshot.enhanced, snapshot.original, store])
+
+  // Editing the draft while a rewrite is running cancels it. The request was
+  // built on the pre-edit text, so its result is obsolete the moment the user
+  // types — dropping it silently would also clobber nothing yet, but the
+  // tokens are still being spent on an answer nobody can use. Aborting is the
+  // explicit gesture (the same one a press performs), just automated.
+  useEffect(() => {
+    if (local !== 'running') return
+    if (draft !== snapshot.original) store.cancel(sessionId)
+  }, [draft, local, sessionId, snapshot.original, store])
 
   // Editing the draft retires a failure: the red icon describes the last
   // attempt, not the text now in the composer.
@@ -136,11 +153,10 @@ function TunerControl({
     }
     const source = draft
     if (typeof source !== 'string' || source.trim() === '') return
-    // The write-back target is captured per Session: a rewrite that lands after
-    // the user switched away still updates the Session that started it.
-    store.start(sessionId, source, (text) => {
-      inputActions.setDraft(text)
-    })
+    // The write-back target is resolved at resolution time from whatever this
+    // Session has mounted, so a rewrite that lands after a switch still
+    // updates the Session that started it.
+    store.start(sessionId, source)
   }, [draft, editing, inputActions, local, sessionId, snapshot.original, store])
 
   const failed = local === 'failed'
