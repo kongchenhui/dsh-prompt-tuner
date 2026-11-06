@@ -3,9 +3,10 @@
  *
  * Registers two surfaces — a composer control that rewrites the draft, and a
  * settings page holding one prompt and the model that applies it — over the
- * host routes this package mounts. This module only assembles: the control,
- * the picker, and the page are separate components, and the shared settings
- * snapshot lives in its own store.
+ * host routes this package mounts, plus the navigation glyph the settings shell
+ * draws for that page. This module only assembles: the control, the picker, the
+ * page, and the icons are separate components, and the shared settings snapshot
+ * lives in its own store.
  *
  * No harness client package is imported: platform modules (`react`) resolve
  * through the loader's injected `require`, everything else is bundled inline.
@@ -17,9 +18,10 @@ import type { SettingsStore } from './settings-store.ts'
 import { createTunerStore } from './tuner-store.ts'
 import type { TunerStore } from './tuner-store.ts'
 import { dictionaries } from './locales.ts'
+import { IconTunerMark } from './icons/index.tsx'
 import { TunerButton } from './components/TunerButton.tsx'
 import { SettingsPage } from './components/SettingsPage.tsx'
-import type { ComposerSlotProps, SettingsSlotProps } from './types.ts'
+import type { ComposerSlotProps, SettingsSectionIconProps, SettingsSlotProps } from './types.ts'
 
 /** Namespace owning this plugin's copy. */
 const NS = 'prompt-tuner'
@@ -81,6 +83,20 @@ function settingsSurface(store: SettingsStore) {
 }
 
 /**
+ * The settings navigation glyph, as the shell hands it over.
+ *
+ * The shell resolves an icon by matching `settings.section.icon` entries
+ * against the section id, so this registration has to carry {@link ID}; it
+ * replaces the shipped gear the shell draws for ids it does not know. The
+ * wrapper, the label, and the selected row's paint stay the shell's.
+ * @param props - square edge and selection flag from the navigation row.
+ * @returns the mark, sized to the row.
+ */
+function SettingsIconSurface(props: SettingsSectionIconProps): ReactElement {
+  return createElement(IconTunerMark, { size: props.size })
+}
+
+/**
  * The composer control as a slot component. The slot passes a loose prop bag;
  * this narrows it at the boundary so {@link TunerButton} can stay typed, and
  * hands it the store its state is partitioned in.
@@ -93,7 +109,7 @@ function composerSurface(store: TunerStore) {
 }
 
 /**
- * Mount both surfaces.
+ * Mount the two surfaces and the settings navigation glyph.
  * @param ctx - client plugin context.
  */
 export function apply(ctx: ClientContext): void {
@@ -120,5 +136,12 @@ export function apply(ctx: ClientContext): void {
       { name: 'settings.section', id: ID, order: 32, locale: NS, label: () => t('sectionLabel') },
       Surface,
     ),
+  )
+  // The navigation row is the shell's, including the selected paint; this only
+  // swaps the fallback gear for the plugin's own mark. `label` is not displayed
+  // by an icon contribution, and the id has to match the section above or the
+  // shell never pairs the two.
+  ctx.slots.inject('settings.section.icon', () =>
+    ctx.slots.register({ name: 'settings.section.icon', id: ID, order: 32 }, SettingsIconSurface),
   )
 }

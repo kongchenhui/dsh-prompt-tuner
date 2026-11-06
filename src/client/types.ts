@@ -88,3 +88,19 @@ export interface ComposerSlotProps {
 export interface SettingsSlotProps {
   readonly t: Translate
 }
+
+/**
+ * Owner props of the settings navigation glyph.
+ *
+ * The shell owns the nav row — its button, its label, and the decorative
+ * `aria-hidden` wrapper — so a contribution supplies the glyph alone.
+ */
+export interface SettingsSectionIconProps {
+  /** Requested square edge in pixels; the shell passes 16. */
+  readonly size: number
+  /**
+   * Whether this section is the open one. The shell paints the selected row
+   * itself and keeps every shipped glyph at one weight, so the mark ignores it.
+   */
+  readonly active: boolean
+}
